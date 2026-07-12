@@ -1,0 +1,33 @@
+{
+  "name": "ashes-and-oath",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ashes & Oath — server-authoritative fantasy strategy for two players",
+  "workspaces": [
+    "shared",
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "predev": "npm run build -w @ashes/shared --if-present",
+    "dev": "concurrently --kill-others-on-fail --names server,client --prefix-colors magenta,cyan \"npm run dev:server:raw\" \"npm run dev:client:raw\"",
+    "dev:client": "npm run build -w @ashes/shared --if-present && npm run dev:client:raw",
+    "dev:client:raw": "npm run dev -w @ashes/client -- --host 0.0.0.0",
+    "dev:server": "npm run build -w @ashes/shared --if-present && npm run dev:server:raw",
+    "dev:server:raw": "npm run dev -w @ashes/server",
+    "build": "npm run build -w @ashes/shared --if-present && npm run build -w @ashes/server && npm run build -w @ashes/client",
+    "start": "npm run start -w @ashes/server",
+    "pretest": "npm run build -w @ashes/shared --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "pretypecheck": "npm run build -w @ashes/shared --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.8.3"
+  }
+}

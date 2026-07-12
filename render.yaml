@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: ashes-and-oath
+    runtime: node
+    plan: free
+    region: frankfurt
+    branch: main
+    autoDeploy: true
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: CLIENT_ORIGIN
+        value: "*"

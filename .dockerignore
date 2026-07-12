@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+node_modules
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+client/vite.config.js
+client/vite.config.d.ts
+coverage
+playwright-report
+test-results
+*.log
+backups

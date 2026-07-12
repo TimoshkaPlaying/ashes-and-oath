@@ -1,0 +1,36 @@
+{
+  "name": "@ashes/server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "predev": "npm run build --prefix ../shared",
+    "dev": "tsx watch src/index.ts",
+    "prebuild": "npm run build --prefix ../shared",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "pretest": "npm run build --prefix ../shared",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "pretypecheck": "npm run build --prefix ../shared",
+    "typecheck": "tsc -p tsconfig.check.json"
+  },
+  "dependencies": {
+    "@ashes/shared": "file:../shared",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1",
+    "zod": "^3.25.23"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.18",
+    "@types/express": "^5.0.2",
+    "@types/node": "^22.15.21",
+    "socket.io-client": "^4.8.1",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.4"
+  }
+}
