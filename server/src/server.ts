@@ -18,6 +18,7 @@ import { RoomManager } from "./rooms/RoomManager.js";
 export interface CreateGameServerOptions {
   clientOrigins?: readonly string[];
   nowProvider?: () => number;
+  stateFile?: string | null;
 }
 
 export interface GameServer {
@@ -33,7 +34,7 @@ export const createGameServer = (options: CreateGameServerOptions = {}): GameSer
   const origins = options.clientOrigins ?? env.clientOrigins;
   const app = express();
   const httpServer = createServer(app);
-  const rooms = new RoomManager(options.nowProvider);
+  const rooms = new RoomManager(options.nowProvider, options.stateFile === undefined ? env.stateFile : options.stateFile);
   const corsOrigin = (origin: string | undefined, callback: (error: Error | null, allowed?: boolean) => void): void => {
     if (!origin || origins.includes("*") || origins.includes(origin)) callback(null, true);
     else callback(new Error("Origin is not allowed by CORS"));
@@ -95,6 +96,7 @@ export const createGameServer = (options: CreateGameServerOptions = {}): GameSer
   };
 
   const stop = async (): Promise<void> => {
+    rooms.persist();
     gateway.close();
     await new Promise<void>((resolve) => io.close(() => resolve()));
     if (httpServer.listening) await new Promise<void>((resolve) => httpServer.close(() => resolve()));

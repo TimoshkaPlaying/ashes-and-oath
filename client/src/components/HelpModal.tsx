@@ -13,7 +13,7 @@ export function HelpModal({ open, onClose }: { open: boolean; onClose: () => voi
         </header>
         <div className="help-intro">
           <MousePointer2 size={30} />
-          <p>Укрепите королевство за 20 секунд перемирия, соберите до четырёх отрядов и разрушьте вражескую ратушу.</p>
+          <p>Укрепите королевство за 30 минут перемирия, соберите до четырёх отрядов и разрушьте вражескую ратушу.</p>
         </div>
         <div className="help-grid">
           <article><kbd>ЛКМ</kbd><div><b>Выбрать отряд</b><span>Щёлкните по бойцам или карточке справа.</span></div></article>

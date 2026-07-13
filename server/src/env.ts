@@ -12,9 +12,12 @@ const positivePort = (value: string | undefined, fallback: number): number => {
 export const env = {
   port: positivePort(process.env.PORT, 3_001),
   host: process.env.HOST?.trim() || "0.0.0.0",
-  clientOrigins: (process.env.CLIENT_ORIGIN || (process.env.NODE_ENV === "production" ? "*" : "http://localhost:5173"))
+  clientOrigins: (process.env.CLIENT_ORIGIN || (process.env.NODE_ENV === "production" ? "*" : "http://localhost:5173,http://127.0.0.1:5173"))
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean),
   nodeEnv: process.env.NODE_ENV || "development",
+  stateFile: process.env.STATE_FILE?.trim() || ((process.env.NODE_ENV || "development") === "test"
+    ? null
+    : resolve(process.cwd(), ".data", "rooms.json")),
 } as const;

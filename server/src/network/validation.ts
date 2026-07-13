@@ -9,6 +9,9 @@ import {
 import { z } from "zod";
 
 const displayName = z.string().trim().min(2).max(24);
+const roomName = z.string().trim().min(2).max(40);
+const roomPassword = z.string().trim().min(4).max(48);
+const roomCode = z.string().trim().toUpperCase().regex(/^[A-HJ-NP-Z2-9]{5}$/);
 const entityId = z.string().min(1).max(80);
 const commandId = z.string().min(6).max(80).regex(/^[A-Za-z0-9_:-]+$/);
 const point = z.object({ x: z.number().finite(), y: z.number().finite() }).strict();
@@ -21,12 +24,20 @@ const unitCounts = z
   })
   .strict();
 
-export const roomCreateSchema = z.object({ displayName }).strict();
+export const roomCreateSchema = z
+  .object({
+    displayName,
+    roomName,
+    visibility: z.enum(["public", "private"]),
+    maxPlayers: z.literal(2),
+    password: roomPassword.optional(),
+  })
+  .strict();
 export const roomJoinSchema = z
-  .object({ code: z.string().trim().toUpperCase().length(5), displayName })
+  .object({ code: roomCode, displayName, password: z.string().trim().max(48).optional() })
   .strict();
 export const roomResumeSchema = z
-  .object({ code: z.string().trim().toUpperCase().length(5), reconnectToken: z.string().min(8).max(120) })
+  .object({ code: roomCode, reconnectToken: z.string().min(8).max(120) })
   .strict();
 export const lobbyUpdateSchema = z
   .object({
@@ -41,6 +52,14 @@ export const lobbyUpdateSchema = z
   })
   .strict();
 export const lobbyReadySchema = z.object({ ready: z.boolean() }).strict();
+export const lobbyRoomSettingsSchema = z
+  .object({
+    name: roomName.optional(),
+    visibility: z.enum(["public", "private"]).optional(),
+    password: z.string().trim().max(48).optional(),
+  })
+  .strict();
+export const lobbyPlayerActionSchema = z.object({ playerId: z.string().min(1).max(80) }).strict();
 export const rematchSchema = z.object({ want: z.boolean() }).strict();
 export const pingSchema = z.object({ clientTime: z.number().finite() }).strict();
 

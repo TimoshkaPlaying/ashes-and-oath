@@ -64,10 +64,12 @@ export function TruceBanner({ phase, seconds }: { phase: GameView['phase']; seco
     );
   }
   if (phase !== 'truce') return null;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
   return (
     <div className={`truce-banner ${seconds <= 5 ? 'ending' : ''}`}>
       <span>∞ ⚔ Перемирие ⚔ ∞</span>
-      <strong>00:{String(seconds).padStart(2, '0')}</strong>
+      <strong>{String(minutes).padStart(2, '0')}:{String(remainingSeconds).padStart(2, '0')}</strong>
       <small>Атака недоступна до окончания перемирия</small>
     </div>
   );

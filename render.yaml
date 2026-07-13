@@ -16,3 +16,5 @@ services:
         value: 0.0.0.0
       - key: CLIENT_ORIGIN
         value: "*"
+      - key: STATE_FILE
+        value: /tmp/ashes-and-oath/rooms.json

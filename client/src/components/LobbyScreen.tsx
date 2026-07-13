@@ -1,4 +1,4 @@
-import { Check, Copy, Crown, DoorOpen, Hourglass, LogOut, Shield, Swords, Users } from 'lucide-react';
+import { Check, Copy, Crown, DoorOpen, Globe2, Hourglass, LockKeyhole, LogOut, Play, Save, Shield, Swords, UserMinus, Users } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { audioDirector } from '../audio/AudioDirector';
 import type { ConnectionState, LobbyCustomization, LobbyView, PlayerView } from '../types/domain';
@@ -10,6 +10,10 @@ interface LobbyScreenProps {
   ping: number | null;
   onUpdate: (customization: Partial<LobbyCustomization>) => void;
   onReady: (ready: boolean) => void;
+  onStart: () => void;
+  onKick: (playerId: string) => void;
+  onTransferOwner: (playerId: string) => void;
+  onRoomSettings: (settings: { name?: string; visibility?: 'public' | 'private'; password?: string }) => void;
   onLeave: () => void;
 }
 
@@ -39,10 +43,13 @@ function PlayerBanner({ player, waiting }: { player?: PlayerView; waiting?: bool
   );
 }
 
-export function LobbyScreen({ lobby, connection, ping, onUpdate, onReady, onLeave }: LobbyScreenProps) {
+export function LobbyScreen({ lobby, connection, ping, onUpdate, onReady, onStart, onKick, onTransferOwner, onRoomSettings, onLeave }: LobbyScreenProps) {
   const self = lobby.players.find((player) => player.id === lobby.selfId) ?? lobby.players[0];
   const opponent = lobby.players.find((player) => player.id !== lobby.selfId);
   const [copied, setCopied] = useState(false);
+  const [roomName, setRoomName] = useState(lobby.roomName);
+  const [roomVisibility, setRoomVisibility] = useState(lobby.visibility);
+  const [roomPassword, setRoomPassword] = useState('');
   const [customization, setCustomization] = useState<LobbyCustomization>(() => ({
     kingdomName: self?.kingdomName || 'Северный Предел',
     color: self?.color || COLORS[0],
@@ -60,6 +67,11 @@ export function LobbyScreen({ lobby, connection, ping, onUpdate, onReady, onLeav
     });
   }, [self?.color, self?.crest, self?.flag, self?.kingdomName]);
 
+  useEffect(() => {
+    setRoomName(lobby.roomName);
+    setRoomVisibility(lobby.visibility);
+  }, [lobby.roomName, lobby.visibility]);
+
   const update = <TKey extends keyof LobbyCustomization>(key: TKey, value: LobbyCustomization[TKey]) => {
     setCustomization((current) => ({ ...current, [key]: value }));
     onUpdate({ [key]: value });
@@ -74,6 +86,8 @@ export function LobbyScreen({ lobby, connection, ping, onUpdate, onReady, onLeav
   };
 
   const ready = self?.ready ?? false;
+  const isHost = lobby.hostId === lobby.selfId;
+  const canStart = isHost && lobby.players.length === lobby.maxPlayers && lobby.players.every((player) => player.ready && player.connected);
 
   return (
     <main className="lobby-screen">
@@ -83,7 +97,7 @@ export function LobbyScreen({ lobby, connection, ping, onUpdate, onReady, onLeav
 
       <section className="lobby-shell iron-panel">
         <OrnateCorners />
-        <div className="lobby-title"><Swords size={20} /><h1>Лобби</h1><Swords size={20} /></div>
+        <div className="lobby-title"><Swords size={20} /><div><h1>{lobby.roomName}</h1><span>{lobby.visibility === 'public' ? <><Globe2 size={13} /> Публичная комната</> : <><LockKeyhole size={13} /> Приватная комната</>}</span></div><Swords size={20} /></div>
         <div className="room-code-box">
           <span>Код комнаты</span>
           <strong>{lobby.roomCode}</strong>
@@ -92,6 +106,15 @@ export function LobbyScreen({ lobby, connection, ping, onUpdate, onReady, onLeav
           </button>
           {copied ? <small>Скопировано</small> : null}
         </div>
+
+        {isHost ? (
+          <form className="host-room-settings" onSubmit={(event) => { event.preventDefault(); onRoomSettings({ name: roomName.trim(), visibility: roomVisibility, ...(roomPassword ? { password: roomPassword } : {}) }); setRoomPassword(''); }}>
+            <label><span>Название</span><input value={roomName} onChange={(event) => setRoomName(event.target.value)} maxLength={40} /></label>
+            <label><span>Доступ</span><select value={roomVisibility} onChange={(event) => setRoomVisibility(event.target.value as 'public' | 'private')}><option value="public">Публичная</option><option value="private">Приватная</option></select></label>
+            <label><span>Новый пароль</span><input type="password" value={roomPassword} onChange={(event) => setRoomPassword(event.target.value)} maxLength={48} placeholder={lobby.passwordRequired ? 'Оставьте пустым без изменения' : 'Необязательно'} /></label>
+            <button type="submit" className="secondary-button"><Save size={16} /> Сохранить</button>
+          </form>
+        ) : null}
 
         <div className="lobby-players">
           <article className={`player-slot ${ready ? 'is-ready' : ''}`}>
@@ -112,7 +135,7 @@ export function LobbyScreen({ lobby, connection, ping, onUpdate, onReady, onLeav
               <div className="sigil-row crest-row">
                 {CRESTS.map((crest) => <button type="button" key={crest.id} className={customization.crest === crest.id ? 'selected' : ''} onClick={() => update('crest', crest.id)} title={crest.label}>{crest.glyph}</button>)}
               </div>
-              <button type="button" className={`ready-button ${ready ? 'is-ready' : ''}`} onClick={() => { audioDirector.play(ready ? 'click' : 'confirm'); onReady(!ready); }}>
+              <button type="button" className={`ready-button ${ready ? 'is-ready' : ''}`} onClick={() => { onReady(!ready); audioDirector.play(ready ? 'click' : 'confirm'); }}>
                 {ready ? <><Check size={20} /> Готов — изменить выбор</> : <><Swords size={20} /> Готов к битве</>}
               </button>
             </div>
@@ -128,6 +151,7 @@ export function LobbyScreen({ lobby, connection, ping, onUpdate, onReady, onLeav
                   <span>Название королевства</span><strong>{opponent.kingdomName}</strong>
                   <div className="opponent-color"><i style={{ backgroundColor: opponent.color }} /><span>{opponent.connected ? 'На связи' : 'Переподключается…'}</span></div>
                   <div className={`opponent-ready ${opponent.ready ? 'ready' : ''}`}>{opponent.ready ? <><Check size={18} /> Готов к битве</> : <><Hourglass size={18} /> Выбирает знамя</>}</div>
+                  {isHost ? <div className="host-player-actions"><button type="button" onClick={() => onTransferOwner(opponent.id)}><Crown size={15} /> Передать права</button><button type="button" className="danger" onClick={() => onKick(opponent.id)}><UserMinus size={15} /> Удалить</button></div> : null}
                 </>
               ) : (
                 <div className="waiting-copy"><Users size={28} /><strong>Ожидание соперника</strong><span>Передайте код комнаты второму игроку</span><i /></div>
@@ -139,8 +163,9 @@ export function LobbyScreen({ lobby, connection, ping, onUpdate, onReady, onLeav
         <div className="lobby-footer">
           <ConnectionBadge connection={connection} ping={ping} />
           <div className="match-readiness">
-            {ready && opponent?.ready ? <><Swords size={18} /> Обе клятвы принесены. Битва начинается…</> : <><Hourglass size={18} /> {opponent ? 'Ожидание готовности игроков' : 'Ожидание второго игрока'}</>}
+            {canStart ? <><Swords size={18} /> Все готовы. Владелец может начать матч.</> : <><Hourglass size={18} /> {opponent ? 'Ожидание готовности игроков' : 'Ожидание второго игрока'}</>}
           </div>
+          {isHost ? <button type="button" className="start-match-button" disabled={!canStart} onClick={onStart}><Play size={18} /> Начать матч</button> : null}
           <button type="button" className="leave-button" onClick={() => { audioDirector.play('click'); onLeave(); }}><LogOut size={18} /> Покинуть комнату</button>
         </div>
       </section>

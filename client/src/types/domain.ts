@@ -37,9 +37,33 @@ export interface PlayerView {
 
 export interface LobbyView {
   roomCode: string;
+  roomName: string;
+  visibility: 'public' | 'private';
+  createdAt: number;
+  passwordRequired: boolean;
+  maxPlayers: number;
   selfId: string;
   hostId: string;
   players: PlayerView[];
+}
+
+export interface PublicRoomView {
+  code: string;
+  name: string;
+  ownerName: string;
+  playerCount: number;
+  maxPlayers: number;
+  status: 'waiting' | 'starting' | 'playing' | 'full' | 'unavailable';
+  createdAt: number;
+  joinable: boolean;
+  passwordRequired: boolean;
+}
+
+export interface RoomCreationOptions {
+  roomName: string;
+  visibility: 'public' | 'private';
+  maxPlayers: 2;
+  password?: string;
 }
 
 export type GamePhase = 'truce' | 'battle' | 'lastBattle' | 'finished';
@@ -201,6 +225,8 @@ export interface NetworkState {
   game: GameView | null;
   resumeSeconds: number | null;
   toasts: ToastMessage[];
+  publicRooms: PublicRoomView[];
+  roomActionPending: boolean;
 }
 
 export const EMPTY_UNITS: UnitCounts = {

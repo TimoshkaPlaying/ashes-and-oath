@@ -13,11 +13,13 @@ import {
 import type { Server, Socket } from "socket.io";
 import type { GameRoom } from "../game/GameRoom.js";
 import { RoomActionError } from "../rooms/errors.js";
-import { RoomManager, type ManagedPlayer } from "../rooms/RoomManager.js";
+import { hashPassword, RoomManager, type ManagedPlayer } from "../rooms/RoomManager.js";
 import { SlidingWindowRateLimiter } from "./rateLimiter.js";
 import {
   gameCommandSchema,
+  lobbyPlayerActionSchema,
   lobbyReadySchema,
+  lobbyRoomSettingsSchema,
   lobbyUpdateSchema,
   pingSchema,
   rematchSchema,
@@ -66,6 +68,9 @@ export interface SocketGateway {
 export const attachSocketGateway = (io: GameIo, rooms: RoomManager, nowProvider: () => number = Date.now): SocketGateway => {
   const limiter = new SlidingWindowRateLimiter();
   let lastSnapshotAt = 0;
+  const broadcastRooms = (now = nowProvider()): void => {
+    io.emit("rooms:updated", rooms.publicRooms(now));
+  };
 
   const emitSnapshots = (room: GameRoom, now: number): void => {
     if (room.status === "lobby") return;
@@ -90,6 +95,9 @@ export const attachSocketGateway = (io: GameIo, rooms: RoomManager, nowProvider:
   };
 
   io.on("connection", (socket) => {
+    socket.emit("rooms:updated", rooms.publicRooms(nowProvider()));
+    socket.on("rooms:list", () => socket.emit("rooms:updated", rooms.publicRooms(nowProvider())));
+
     socket.on("room:create", async (raw, ack) => {
       const now = nowProvider();
       if (!limiter.allow(`${socket.id}:room`, 8, 5_000, now)) {
@@ -102,16 +110,22 @@ export const attachSocketGateway = (io: GameIo, rooms: RoomManager, nowProvider:
         return;
       }
       if (rooms.findBySocket(socket.id)) {
-        sendRoomError(socket, invalidRequest("Сокет уже находится в комнате"), ack);
+        sendRoomError(socket, { code: "ALREADY_IN_ROOM", message: "Игрок уже находится в комнате" }, ack);
         return;
       }
       try {
-        const managed = rooms.createRoom(socket.id, parsed.data.displayName, now);
+        const managed = rooms.createRoom(socket.id, parsed.data.displayName, now, {
+          roomName: parsed.data.roomName,
+          visibility: parsed.data.visibility,
+          maxPlayers: parsed.data.maxPlayers,
+          ...(parsed.data.password === undefined ? {} : { password: parsed.data.password }),
+        });
         await bindSocket(socket, managed);
         const joined = makeJoined(managed, false, now);
         socket.emit("room:joined", joined);
         ack?.(joined);
         io.to(managed.room.code).emit("lobby:state", managed.room.getLobbyState(now));
+        broadcastRooms(now);
       } catch (caught) {
         sendRoomError(socket, toRoomError(caught), ack);
       }
@@ -129,16 +143,17 @@ export const attachSocketGateway = (io: GameIo, rooms: RoomManager, nowProvider:
         return;
       }
       if (rooms.findBySocket(socket.id)) {
-        sendRoomError(socket, invalidRequest("Сокет уже находится в комнате"), ack);
+        sendRoomError(socket, { code: "ALREADY_IN_ROOM", message: "Игрок уже находится в комнате" }, ack);
         return;
       }
       try {
-        const managed = rooms.joinRoom(parsed.data.code, socket.id, parsed.data.displayName, now);
+        const managed = rooms.joinRoom(parsed.data.code, socket.id, parsed.data.displayName, now, parsed.data.password);
         await bindSocket(socket, managed);
         const joined = makeJoined(managed, false, now);
         socket.emit("room:joined", joined);
         ack?.(joined);
         io.to(managed.room.code).emit("lobby:state", managed.room.getLobbyState(now));
+        broadcastRooms(now);
       } catch (caught) {
         sendRoomError(socket, toRoomError(caught), ack);
       }
@@ -152,7 +167,7 @@ export const attachSocketGateway = (io: GameIo, rooms: RoomManager, nowProvider:
         return;
       }
       if (rooms.findBySocket(socket.id)) {
-        sendRoomError(socket, invalidRequest("Сокет уже находится в комнате"), ack);
+        sendRoomError(socket, { code: "ALREADY_IN_ROOM", message: "Игрок уже находится в комнате" }, ack);
         return;
       }
       try {
@@ -194,6 +209,7 @@ export const attachSocketGateway = (io: GameIo, rooms: RoomManager, nowProvider:
       io.to(roomCode).emit("connection:status", left.status);
       io.to(roomCode).emit("lobby:state", left.room.getLobbyState(now));
       flushRoom(left.room, now, true);
+      broadcastRooms(now);
     });
 
     socket.on("lobby:update", (raw) => {
@@ -235,6 +251,88 @@ export const attachSocketGateway = (io: GameIo, rooms: RoomManager, nowProvider:
         const started = managed.room.setReady(managed.playerId, parsed.data.ready, now);
         io.to(managed.room.code).emit("lobby:state", managed.room.getLobbyState(now));
         flushRoom(managed.room, now, started);
+        broadcastRooms(now);
+      } catch (caught) {
+        socket.emit("room:error", toRoomError(caught));
+      }
+    });
+
+    socket.on("lobby:start", () => {
+      const managed = rooms.findBySocket(socket.id);
+      if (!managed) {
+        socket.emit("room:error", { code: "PLAYER_NOT_IN_ROOM", message: "Сначала войдите в комнату" });
+        return;
+      }
+      const now = nowProvider();
+      try {
+        managed.room.startByHost(managed.playerId, now);
+        io.to(managed.room.code).emit("lobby:state", managed.room.getLobbyState(now));
+        flushRoom(managed.room, now, true);
+        broadcastRooms(now);
+      } catch (caught) {
+        socket.emit("room:error", toRoomError(caught));
+      }
+    });
+
+    socket.on("lobby:kick", (raw) => {
+      const managed = rooms.findBySocket(socket.id);
+      const parsed = lobbyPlayerActionSchema.safeParse(raw);
+      if (!managed || !parsed.success) {
+        socket.emit("room:error", managed ? invalidRequest() : { code: "PLAYER_NOT_IN_ROOM", message: "Сначала войдите в комнату" });
+        return;
+      }
+      const now = nowProvider();
+      try {
+        const removed = managed.room.kickPlayer(managed.playerId, parsed.data.playerId, now);
+        const removedSocket = removed.socketId ? io.sockets.sockets.get(removed.socketId) : undefined;
+        if (removedSocket) {
+          removedSocket.emit("room:error", { code: "KICKED", message: "Владелец удалил вас из комнаты" });
+          void removedSocket.leave(managed.room.code);
+          delete removedSocket.data.roomCode;
+          delete removedSocket.data.playerId;
+          delete removedSocket.data.reconnectToken;
+        }
+        removed.socketId = null;
+        io.to(managed.room.code).emit("lobby:state", managed.room.getLobbyState(now));
+        broadcastRooms(now);
+      } catch (caught) {
+        socket.emit("room:error", toRoomError(caught));
+      }
+    });
+
+    socket.on("lobby:transfer-owner", (raw) => {
+      const managed = rooms.findBySocket(socket.id);
+      const parsed = lobbyPlayerActionSchema.safeParse(raw);
+      if (!managed || !parsed.success) {
+        socket.emit("room:error", managed ? invalidRequest() : { code: "PLAYER_NOT_IN_ROOM", message: "Сначала войдите в комнату" });
+        return;
+      }
+      const now = nowProvider();
+      try {
+        managed.room.transferOwner(managed.playerId, parsed.data.playerId, now);
+        io.to(managed.room.code).emit("lobby:state", managed.room.getLobbyState(now));
+        broadcastRooms(now);
+      } catch (caught) {
+        socket.emit("room:error", toRoomError(caught));
+      }
+    });
+
+    socket.on("lobby:room-settings", (raw) => {
+      const managed = rooms.findBySocket(socket.id);
+      const parsed = lobbyRoomSettingsSchema.safeParse(raw);
+      if (!managed || !parsed.success) {
+        socket.emit("room:error", managed ? invalidRequest() : { code: "PLAYER_NOT_IN_ROOM", message: "Сначала войдите в комнату" });
+        return;
+      }
+      const now = nowProvider();
+      try {
+        managed.room.updateRoomSettings(managed.playerId, {
+          ...(parsed.data.name === undefined ? {} : { name: parsed.data.name }),
+          ...(parsed.data.visibility === undefined ? {} : { visibility: parsed.data.visibility }),
+          ...(parsed.data.password === undefined ? {} : { passwordHash: hashPassword(parsed.data.password) }),
+        }, now);
+        io.to(managed.room.code).emit("lobby:state", managed.room.getLobbyState(now));
+        broadcastRooms(now);
       } catch (caught) {
         socket.emit("room:error", toRoomError(caught));
       }
@@ -315,12 +413,15 @@ export const attachSocketGateway = (io: GameIo, rooms: RoomManager, nowProvider:
       io.to(disconnected.room.code).emit("connection:status", disconnected.status);
       io.to(disconnected.room.code).emit("lobby:state", disconnected.room.getLobbyState(now));
       flushRoom(disconnected.room, now, true);
+      broadcastRooms(now);
     });
   });
 
   const interval = setInterval(() => {
     const now = nowProvider();
+    const roomCountBeforeTick = rooms.size;
     rooms.tick(now);
+    if (rooms.size !== roomCountBeforeTick) broadcastRooms(now);
     const includeSnapshots = now - lastSnapshotAt >= MATCH_CONFIG.snapshotMs;
     if (includeSnapshots) lastSnapshotAt = now;
     for (const room of rooms.allRooms()) flushRoom(room, now, includeSnapshots);

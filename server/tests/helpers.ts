@@ -13,6 +13,7 @@ export const createStartedRoom = (startAt = 10_000) => {
   const second = room.addPlayer("socket-b", "Boris", clock.now).player;
   room.setReady(first.playerId, true, clock.now);
   room.setReady(second.playerId, true, clock.now);
+  room.startByHost(first.playerId, clock.now);
   const match = room.getMatchState();
   if (!match) throw new Error("Match did not start");
   const firstState = match.players.get(first.playerId);

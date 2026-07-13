@@ -9,7 +9,9 @@ import {
   type FinishReason,
   type KingdomCustomization,
   type LobbyState,
+  type RoomVisibility,
   type RoomStatus,
+  type ResourceKind,
 } from "@ashes/shared";
 import { executeCommand } from "./commands.js";
 import { applyLastBattleBuildingPenalty, tickCombat } from "./combat.js";
@@ -23,6 +25,41 @@ import { RoomActionError } from "../rooms/errors.js";
 export interface AddPlayerResult {
   player: RoomPlayer;
   reconnectToken: string;
+}
+
+export interface GameRoomOptions {
+  name: string;
+  visibility: RoomVisibility;
+  maxPlayers: number;
+  passwordHash: string | null;
+  createdAt: number;
+}
+
+type PersistedRoomPlayer = Omit<RoomPlayer, "commandHistory"> & {
+  commandHistory: Array<[string, GameCommandResult]>;
+};
+
+type PersistedMatchPlayerState = Omit<MatchPlayerState, "cappedResources"> & {
+  cappedResources: ResourceKind[];
+};
+
+type PersistedMatchState = Omit<MatchState, "players" | "rematchVotes"> & {
+  players: Array<[string, PersistedMatchPlayerState]>;
+  rematchVotes: string[];
+};
+
+export interface PersistedGameRoom {
+  code: string;
+  name: string;
+  visibility: RoomVisibility;
+  maxPlayers: number;
+  passwordHash: string | null;
+  createdAt: number;
+  ownerPlayerId: string;
+  players: PersistedRoomPlayer[];
+  match: PersistedMatchState | null;
+  events: GameEvent[];
+  lastActivityAt: number;
 }
 
 const GLOBAL_EVENT_TYPES = new Set<GameEvent["type"]>([
@@ -40,14 +77,90 @@ export class GameRoom {
   public readonly code: string;
   private readonly nowProvider: () => number;
   private readonly roomPlayers: RoomPlayer[] = [];
+  private roomName: string;
+  private visibility: RoomVisibility;
+  private readonly maxPlayers: number;
+  private passwordHash: string | null;
+  private readonly createdAt: number;
+  private ownerPlayerId = "";
   private match: MatchState | null = null;
   private readonly events: GameEvent[] = [];
   private lastActivityAt: number;
 
-  public constructor(code: string, nowProvider: () => number = Date.now) {
+  public constructor(code: string, nowProvider: () => number = Date.now, options?: Partial<GameRoomOptions>) {
     this.code = code;
     this.nowProvider = nowProvider;
-    this.lastActivityAt = nowProvider();
+    const now = nowProvider();
+    this.roomName = options?.name?.trim() || `Комната ${code}`;
+    this.visibility = options?.visibility ?? "private";
+    this.maxPlayers = options?.maxPlayers === 2 ? 2 : 2;
+    this.passwordHash = options?.passwordHash ?? null;
+    this.createdAt = options?.createdAt ?? now;
+    this.lastActivityAt = now;
+  }
+
+  public static restore(data: PersistedGameRoom, nowProvider: () => number = Date.now): GameRoom {
+    const now = nowProvider();
+    const room = new GameRoom(data.code, nowProvider, {
+      name: data.name,
+      visibility: data.visibility,
+      maxPlayers: data.maxPlayers,
+      passwordHash: data.passwordHash,
+      createdAt: data.createdAt,
+    });
+    room.ownerPlayerId = data.ownerPlayerId;
+    for (const persisted of data.players) {
+      const { commandHistory, ...player } = persisted;
+      room.roomPlayers.push({
+        ...player,
+        socketId: null,
+        connected: false,
+        ready: false,
+        reconnectDeadline: now + MATCH_CONFIG.roomIdleCleanupMs,
+        commandHistory: new Map(commandHistory),
+      });
+    }
+    if (data.match) {
+      const { players, rematchVotes, ...match } = data.match;
+      room.match = {
+        ...match,
+        lastTickAt: now,
+        players: new Map(players.map(([playerId, persisted]) => {
+          const { cappedResources, ...player } = persisted;
+          return [playerId, { ...player, cappedResources: new Set(cappedResources) }];
+        })),
+        rematchVotes: new Set(rematchVotes),
+      };
+    }
+    room.events.push(...data.events);
+    room.lastActivityAt = now;
+    return room;
+  }
+
+  public serialize(): PersistedGameRoom {
+    return {
+      code: this.code,
+      name: this.roomName,
+      visibility: this.visibility,
+      maxPlayers: this.maxPlayers,
+      passwordHash: this.passwordHash,
+      createdAt: this.createdAt,
+      ownerPlayerId: this.ownerPlayerId,
+      players: this.roomPlayers.map((player) => ({
+        ...player,
+        commandHistory: [...player.commandHistory.entries()],
+      })),
+      match: this.match ? {
+        ...this.match,
+        players: [...this.match.players.entries()].map(([playerId, player]) => [playerId, {
+          ...player,
+          cappedResources: [...player.cappedResources],
+        }]),
+        rematchVotes: [...this.match.rematchVotes],
+      } : null,
+      events: [...this.events],
+      lastActivityAt: this.lastActivityAt,
+    };
   }
 
   public get players(): readonly RoomPlayer[] {
@@ -63,13 +176,41 @@ export class GameRoom {
     return this.lastActivityAt;
   }
 
+  public get name(): string {
+    return this.roomName;
+  }
+
+  public get roomVisibility(): RoomVisibility {
+    return this.visibility;
+  }
+
+  public get capacity(): number {
+    return this.maxPlayers;
+  }
+
+  public get createdTimestamp(): number {
+    return this.createdAt;
+  }
+
+  public get ownerId(): string {
+    return this.ownerPlayerId;
+  }
+
+  public get passwordRequired(): boolean {
+    return this.passwordHash !== null;
+  }
+
+  public matchesPasswordHash(candidate: string | null): boolean {
+    return this.passwordHash === null || candidate === this.passwordHash;
+  }
+
   public getMatchState(): MatchState | null {
     return this.match;
   }
 
   public addPlayer(socketId: string, displayName: string, now = this.nowProvider()): AddPlayerResult {
     if (this.status !== "lobby") throw new RoomActionError("ROOM_ALREADY_STARTED", "Матч уже начался");
-    if (this.roomPlayers.length >= 2) throw new RoomActionError("ROOM_FULL", "В комнате уже два игрока");
+    if (this.roomPlayers.length >= this.maxPlayers) throw new RoomActionError("ROOM_FULL", "Комната заполнена");
     const normalizedName = displayName.trim();
     if (this.roomPlayers.some((player) => player.displayName.toLocaleLowerCase() === normalizedName.toLocaleLowerCase())) {
       throw new RoomActionError("NAME_TAKEN", "Это имя уже занято в комнате");
@@ -85,6 +226,7 @@ export class GameRoom {
       now,
     );
     this.roomPlayers.push(player);
+    if (!this.ownerPlayerId) this.ownerPlayerId = player.playerId;
     this.lastActivityAt = now;
     return { player, reconnectToken };
   }
@@ -130,30 +272,75 @@ export class GameRoom {
     const player = this.requirePlayer(playerId);
     player.ready = ready;
     this.lastActivityAt = now;
-    if (
-      this.roomPlayers.length === 2 &&
-      this.roomPlayers.every((candidate) => candidate.ready && candidate.connected)
-    ) {
-      this.startMatch(now);
-      return true;
-    }
     return false;
+  }
+
+  public startByHost(playerId: string, now = this.nowProvider()): void {
+    this.requireOwner(playerId);
+    if (this.status !== "lobby") throw new RoomActionError("ROOM_ALREADY_STARTED", "Матч уже начался");
+    if (this.roomPlayers.length !== this.maxPlayers) {
+      throw new RoomActionError("INVALID_REQUEST", "Для старта нужны два игрока");
+    }
+    if (!this.roomPlayers.every((player) => player.ready && player.connected)) {
+      throw new RoomActionError("INVALID_REQUEST", "Все игроки должны быть подключены и готовы");
+    }
+    this.startMatch(now);
+  }
+
+  public updateRoomSettings(
+    playerId: string,
+    update: { name?: string; visibility?: RoomVisibility; passwordHash?: string | null },
+    now = this.nowProvider(),
+  ): void {
+    this.requireOwner(playerId);
+    if (this.status !== "lobby") throw new RoomActionError("ROOM_ALREADY_STARTED", "Матч уже начался");
+    if (update.name !== undefined) this.roomName = update.name.trim();
+    if (update.visibility !== undefined) this.visibility = update.visibility;
+    if (update.passwordHash !== undefined) this.passwordHash = update.passwordHash;
+    this.lastActivityAt = now;
+  }
+
+  public kickPlayer(ownerId: string, targetPlayerId: string, now = this.nowProvider()): RoomPlayer {
+    this.requireOwner(ownerId);
+    if (this.status !== "lobby") throw new RoomActionError("ROOM_ALREADY_STARTED", "Матч уже начался");
+    if (targetPlayerId === ownerId) throw new RoomActionError("INVALID_REQUEST", "Владелец не может удалить себя");
+    const index = this.roomPlayers.findIndex((player) => player.playerId === targetPlayerId);
+    if (index < 0) throw new RoomActionError("PLAYER_NOT_FOUND", "Игрок не найден");
+    const [removed] = this.roomPlayers.splice(index, 1);
+    removed!.connected = false;
+    removed!.reconnectDeadline = null;
+    removed!.reconnectToken = randomId("kicked");
+    this.lastActivityAt = now;
+    return removed!;
+  }
+
+  public transferOwner(ownerId: string, targetPlayerId: string, now = this.nowProvider()): void {
+    this.requireOwner(ownerId);
+    if (this.status !== "lobby") throw new RoomActionError("ROOM_ALREADY_STARTED", "Матч уже начался");
+    if (!this.findPlayerById(targetPlayerId)) throw new RoomActionError("PLAYER_NOT_FOUND", "Игрок не найден");
+    this.ownerPlayerId = targetPlayerId;
+    this.lastActivityAt = now;
   }
 
   public getLobbyState(now = this.nowProvider()): LobbyState {
     return {
       code: this.code,
+      name: this.roomName,
       status: this.status,
-      players: this.roomPlayers.map((player, index) => ({
+      visibility: this.visibility,
+      createdAt: this.createdAt,
+      ownerPlayerId: this.ownerPlayerId,
+      passwordRequired: this.passwordRequired,
+      players: this.roomPlayers.map((player) => ({
         playerId: player.playerId,
         displayName: player.displayName,
         customization: { ...player.customization },
         ready: player.ready,
         connected: player.connected,
         reconnectDeadline: player.reconnectDeadline,
-        host: index === 0,
+        host: player.playerId === this.ownerPlayerId,
       })),
-      maxPlayers: 2,
+      maxPlayers: this.maxPlayers,
       canStart:
         this.roomPlayers.length === 2 &&
         this.roomPlayers.every((player) => player.ready && player.connected),
@@ -206,6 +393,7 @@ export class GameRoom {
     if (!this.match) {
       const index = this.roomPlayers.indexOf(player);
       if (index >= 0) this.roomPlayers.splice(index, 1);
+      if (this.ownerPlayerId === player.playerId) this.ownerPlayerId = this.roomPlayers[0]?.playerId ?? "";
     }
     this.lastActivityAt = now;
     return {
@@ -223,6 +411,10 @@ export class GameRoom {
       reconnectDeadline: player.reconnectDeadline,
       message: player.connected ? "Игрок подключён" : "Игрок переподключается",
     };
+  }
+
+  private requireOwner(playerId: string): void {
+    if (this.ownerPlayerId !== playerId) throw new RoomActionError("NOT_ROOM_OWNER", "Действие доступно только владельцу комнаты");
   }
 
   public handleCommand(playerId: string, command: GameCommand, now = this.nowProvider()): GameCommandResult {
@@ -411,7 +603,7 @@ export class GameRoom {
     this.emitEvent({
       type: rematch ? "rematchStarted" : "matchStarted",
       serverTime: now,
-      message: rematch ? "Реванш начался" : "Матч начался: 20 секунд перемирия",
+      message: rematch ? "Реванш начался" : "Матч начался: 30 минут перемирия",
     });
   }
 

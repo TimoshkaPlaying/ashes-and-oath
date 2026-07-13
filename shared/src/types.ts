@@ -119,23 +119,47 @@ export interface LobbyPlayer {
 }
 
 export type RoomStatus = "lobby" | "playing" | "finished";
+export type RoomVisibility = "public" | "private";
+export type PublicRoomStatus = "waiting" | "starting" | "playing" | "full" | "unavailable";
+
+export interface PublicRoomSummary {
+  code: string;
+  name: string;
+  ownerName: string;
+  playerCount: number;
+  maxPlayers: number;
+  status: PublicRoomStatus;
+  createdAt: number;
+  joinable: boolean;
+  passwordRequired: boolean;
+}
 
 export interface LobbyState {
   code: string;
+  name: string;
   status: RoomStatus;
+  visibility: RoomVisibility;
+  createdAt: number;
+  ownerPlayerId: string;
+  passwordRequired: boolean;
   players: LobbyPlayer[];
-  maxPlayers: 2;
+  maxPlayers: number;
   canStart: boolean;
   serverTime: number;
 }
 
 export interface RoomCreateRequest {
   displayName: string;
+  roomName: string;
+  visibility: RoomVisibility;
+  maxPlayers: number;
+  password?: string;
 }
 
 export interface RoomJoinRequest {
   code: string;
   displayName: string;
+  password?: string;
 }
 
 export interface RoomResumeRequest {
@@ -149,6 +173,12 @@ export interface LobbyUpdateRequest {
 
 export interface LobbyReadyRequest {
   ready: boolean;
+}
+
+export interface LobbyRoomSettingsRequest {
+  name?: string;
+  visibility?: RoomVisibility;
+  password?: string;
 }
 
 export interface RoomJoined {
@@ -167,6 +197,12 @@ export const ROOM_ERROR_CODES = [
   "INVALID_RECONNECT_TOKEN",
   "PLAYER_NOT_IN_ROOM",
   "NAME_TAKEN",
+  "ALREADY_IN_ROOM",
+  "ROOM_PASSWORD_REQUIRED",
+  "ROOM_PASSWORD_INVALID",
+  "NOT_ROOM_OWNER",
+  "PLAYER_NOT_FOUND",
+  "KICKED",
   "RATE_LIMITED",
   "INTERNAL_ERROR",
 ] as const;
@@ -486,9 +522,14 @@ export interface ClientToServerEvents {
   "room:create": (payload: RoomCreateRequest, ack?: (response: RoomJoined | RoomError) => void) => void;
   "room:join": (payload: RoomJoinRequest, ack?: (response: RoomJoined | RoomError) => void) => void;
   "room:resume": (payload: RoomResumeRequest, ack?: (response: RoomJoined | RoomError) => void) => void;
+  "rooms:list": () => void;
   "room:leave": () => void;
   "lobby:update": (payload: LobbyUpdateRequest) => void;
   "lobby:ready": (payload: LobbyReadyRequest) => void;
+  "lobby:start": () => void;
+  "lobby:kick": (payload: { playerId: string }) => void;
+  "lobby:transfer-owner": (payload: { playerId: string }) => void;
+  "lobby:room-settings": (payload: LobbyRoomSettingsRequest) => void;
   "game:command": (command: GameCommand) => void;
   "game:rematch": (payload: { want: boolean }) => void;
   "ping:request": (payload: { clientTime: number }) => void;
@@ -497,6 +538,7 @@ export interface ClientToServerEvents {
 export interface ServerToClientEvents {
   "room:joined": (payload: RoomJoined) => void;
   "room:error": (payload: RoomError) => void;
+  "rooms:updated": (payload: PublicRoomSummary[]) => void;
   "lobby:state": (payload: LobbyState) => void;
   "game:snapshot": (payload: GameSnapshot) => void;
   "game:event": (payload: GameEvent) => void;

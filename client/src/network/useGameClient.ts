@@ -7,6 +7,8 @@ import type {
   GameEvent,
   GameSnapshot,
   LobbyState,
+  LobbyRoomSettingsRequest,
+  PublicRoomSummary,
   RoomError,
   RoomJoined,
   ServerToClientEvents,
@@ -20,6 +22,7 @@ import type {
   LobbyView,
   NetworkState,
   PlayerView,
+  RoomCreationOptions,
   QueueItemView,
   ToastMessage,
 } from '../types/domain';
@@ -88,6 +91,11 @@ function lobbyPlayerToView(player: LobbyState['players'][number]): PlayerView {
 function normalizeLobby(lobby: LobbyState, selfId: string): LobbyView {
   return {
     roomCode: lobby.code,
+    roomName: lobby.name,
+    visibility: lobby.visibility,
+    createdAt: lobby.createdAt,
+    passwordRequired: lobby.passwordRequired,
+    maxPlayers: lobby.maxPlayers,
     selfId,
     hostId: lobby.players.find((player) => player.host)?.playerId ?? selfId,
     players: lobby.players.map(lobbyPlayerToView),
@@ -260,6 +268,12 @@ function errorTitle(error: RoomError) {
     case 'ROOM_NOT_FOUND': return 'Комната не найдена';
     case 'ROOM_FULL': return 'В комнате уже два игрока';
     case 'ROOM_ALREADY_STARTED': return 'Сражение уже началось';
+    case 'ROOM_PASSWORD_REQUIRED': return 'Нужен пароль';
+    case 'ROOM_PASSWORD_INVALID': return 'Неверный пароль';
+    case 'ALREADY_IN_ROOM': return 'Вы уже в комнате';
+    case 'NOT_ROOM_OWNER': return 'Недостаточно прав';
+    case 'PLAYER_NOT_FOUND': return 'Игрок не найден';
+    case 'KICKED': return 'Вы удалены из комнаты';
     case 'NAME_TAKEN': return 'Это имя уже занято';
     case 'RATE_LIMITED': return 'Слишком много запросов';
     default: return 'Не удалось войти';
@@ -270,12 +284,12 @@ function initialState(): NetworkState {
   if (IS_DEMO) {
     return {
       connection: 'connected', ping: 28, screen: 'game', lobby: null, game: DEMO_GAME,
-      resumeSeconds: null, toasts: [],
+      resumeSeconds: null, toasts: [], publicRooms: [], roomActionPending: false,
     };
   }
   return {
     connection: 'connecting', ping: null, screen: 'menu', lobby: null, game: null,
-    resumeSeconds: null, toasts: [],
+    resumeSeconds: null, toasts: [], publicRooms: [], roomActionPending: false,
   };
 }
 
@@ -288,6 +302,7 @@ export function useGameClient() {
   const toastTimersRef = useRef(new Set<number>());
   const attemptedResumeRef = useRef(false);
   const disconnectDeadlineRef = useRef<number | null>(null);
+  const roomActionPendingRef = useRef(false);
 
   const removeToast = useCallback((id: string) => {
     setState((current) => ({ ...current, toasts: current.toasts.filter((toast) => toast.id !== id) }));
@@ -342,6 +357,7 @@ export function useGameClient() {
         lobby: normalizeLobby(joined.lobby, joined.playerId),
         connection: 'connected',
         resumeSeconds: null,
+        roomActionPending: false,
       }));
     };
 
@@ -349,12 +365,27 @@ export function useGameClient() {
       if (error.code === 'INVALID_RECONNECT_TOKEN' || error.code === 'PLAYER_NOT_IN_ROOM' || error.code === 'ROOM_NOT_FOUND') {
         localStorage.removeItem(SESSION_KEY);
       }
+      if (error.code === 'KICKED') {
+        localStorage.removeItem(SESSION_KEY);
+        selfIdRef.current = '';
+        eventLogRef.current = [];
+        setState((current) => ({
+          ...current,
+          screen: 'menu',
+          lobby: null,
+          game: null,
+          roomActionPending: false,
+        }));
+      } else {
+        setState((current) => ({ ...current, roomActionPending: false }));
+      }
       addToast({ tone: 'danger', title: errorTitle(error), detail: error.message });
     };
 
     socket.on('connect', () => {
       disconnectDeadlineRef.current = null;
       setState((current) => ({ ...current, connection: 'connected', resumeSeconds: null }));
+      socket.emit('rooms:list');
       const session = readSession();
       if (session && !attemptedResumeRef.current) {
         attemptedResumeRef.current = true;
@@ -365,6 +396,7 @@ export function useGameClient() {
       }
     });
     socket.on('disconnect', () => {
+      roomActionPendingRef.current = false;
       const hasSession = Boolean(readSession());
       if (hasSession) attemptedResumeRef.current = false;
       disconnectDeadlineRef.current = hasSession ? Date.now() + 60_000 : null;
@@ -372,15 +404,20 @@ export function useGameClient() {
         ...current,
         connection: hasSession ? 'reconnecting' : 'offline',
         resumeSeconds: hasSession ? 60 : null,
+        roomActionPending: false,
       }));
     });
     socket.io.on('reconnect_attempt', () => setState((current) => ({ ...current, connection: 'reconnecting' })));
     socket.on('connect_error', () => setState((current) => ({
       ...current,
       connection: readSession() ? 'reconnecting' : 'offline',
+      roomActionPending: false,
     })));
     socket.on('room:joined', acceptJoined);
     socket.on('room:error', showRoomError);
+    socket.on('rooms:updated', (rooms: PublicRoomSummary[]) => {
+      setState((current) => ({ ...current, publicRooms: rooms }));
+    });
     socket.on('lobby:state', (lobby) => {
       setState((current) => ({
         ...current,
@@ -448,6 +485,7 @@ export function useGameClient() {
     const pingTimer = window.setInterval(() => {
       if (socket.connected) socket.emit('ping:request', { clientTime: performance.now() });
     }, 3_000);
+    const roomListTimer = window.setInterval(() => socket.emit('rooms:list'), 5_000);
     const countdownTimer = window.setInterval(() => {
       if (disconnectDeadlineRef.current === null) return;
       const remaining = Math.max(0, Math.ceil((disconnectDeadlineRef.current - Date.now()) / 1000));
@@ -456,6 +494,7 @@ export function useGameClient() {
 
     return () => {
       window.clearInterval(pingTimer);
+      window.clearInterval(roomListTimer);
       window.clearInterval(countdownTimer);
       socket.removeAllListeners();
       socket.io.removeAllListeners();
@@ -470,6 +509,8 @@ export function useGameClient() {
   }, []);
 
   const handleJoinResponse = useCallback((response: RoomJoined | RoomError) => {
+    roomActionPendingRef.current = false;
+    setState((current) => ({ ...current, roomActionPending: false }));
     if ('reconnectToken' in response) {
       saveSession(response);
       selfIdRef.current = response.playerId;
@@ -477,27 +518,40 @@ export function useGameClient() {
         ...current,
         screen: 'lobby',
         lobby: normalizeLobby(response.lobby, response.playerId),
+        roomActionPending: false,
       }));
       addToast({ tone: 'success', title: response.resumed ? 'Связь восстановлена' : 'Комната готова' });
-    } else {
-      addToast({ tone: 'danger', title: errorTitle(response), detail: response.message });
     }
   }, [addToast]);
 
-  const createRoom = useCallback((displayName: string) => {
+  const createRoom = useCallback((displayName: string, options: RoomCreationOptions) => {
+    if (roomActionPendingRef.current) return;
     const name = displayName.trim().slice(0, 24) || 'Полководец';
     localStorage.setItem(DISPLAY_NAME_KEY, name);
     if (!socketRef.current?.connected) {
       addToast({ tone: 'danger', title: 'Сервер недоступен', detail: 'Проверьте, запущен ли сервер игры.' });
       return;
     }
-    socketRef.current.emit('room:create', { displayName: name }, handleJoinResponse);
+    roomActionPendingRef.current = true;
+    setState((current) => ({ ...current, roomActionPending: true }));
+    socketRef.current.emit('room:create', {
+      displayName: name,
+      roomName: options.roomName.trim(),
+      visibility: options.visibility,
+      maxPlayers: 2,
+      ...(options.password?.trim() ? { password: options.password.trim() } : {}),
+    }, handleJoinResponse);
   }, [addToast, handleJoinResponse]);
 
-  const joinRoom = useCallback((code: string, displayName: string) => {
-    const normalizedCode = code.trim().toUpperCase();
-    if (normalizedCode.length < 4) {
-      addToast({ tone: 'warning', title: 'Введите код комнаты', detail: 'Код состоит из 5 символов.' });
+  const joinRoom = useCallback((code: string, displayName: string, password?: string) => {
+    if (roomActionPendingRef.current) return;
+    const normalizedCode = code.trim().toUpperCase().replace(/\s+/g, '');
+    if (!normalizedCode) {
+      addToast({ tone: 'warning', title: 'Поле с кодом пустое', detail: 'Введите пятизначный код комнаты.' });
+      return;
+    }
+    if (!/^[A-HJ-NP-Z2-9]{5}$/.test(normalizedCode)) {
+      addToast({ tone: 'warning', title: 'Неправильный код', detail: 'Код состоит из 5 латинских букв или цифр без пробелов.' });
       return;
     }
     const name = displayName.trim().slice(0, 24) || 'Полководец';
@@ -506,7 +560,13 @@ export function useGameClient() {
       addToast({ tone: 'danger', title: 'Сервер недоступен', detail: 'Подключение будет восстановлено автоматически.' });
       return;
     }
-    socketRef.current.emit('room:join', { code: normalizedCode, displayName: name }, handleJoinResponse);
+    roomActionPendingRef.current = true;
+    setState((current) => ({ ...current, roomActionPending: true }));
+    socketRef.current.emit('room:join', {
+      code: normalizedCode,
+      displayName: name,
+      ...(password?.trim() ? { password: password.trim() } : {}),
+    }, handleJoinResponse);
   }, [addToast, handleJoinResponse]);
 
   const updateLobby = useCallback((customization: { kingdomName?: string; color?: string; flag?: string; crest?: string }) => {
@@ -524,6 +584,14 @@ export function useGameClient() {
     socketRef.current?.emit('lobby:ready', { ready });
   }, []);
 
+  const startMatch = useCallback(() => socketRef.current?.emit('lobby:start'), []);
+  const kickPlayer = useCallback((playerId: string) => socketRef.current?.emit('lobby:kick', { playerId }), []);
+  const transferOwner = useCallback((playerId: string) => socketRef.current?.emit('lobby:transfer-owner', { playerId }), []);
+  const updateRoomSettings = useCallback((settings: LobbyRoomSettingsRequest) => {
+    socketRef.current?.emit('lobby:room-settings', settings);
+  }, []);
+  const requestRoomList = useCallback(() => socketRef.current?.emit('rooms:list'), []);
+
   const leaveRoom = useCallback(() => {
     socketRef.current?.emit('room:leave');
     localStorage.removeItem(SESSION_KEY);
@@ -531,7 +599,8 @@ export function useGameClient() {
     eventLogRef.current = [];
     seqRef.current = 1;
     attemptedResumeRef.current = false;
-    setState((current) => ({ ...current, screen: 'menu', lobby: null, game: null, resumeSeconds: null }));
+    roomActionPendingRef.current = false;
+    setState((current) => ({ ...current, screen: 'menu', lobby: null, game: null, resumeSeconds: null, roomActionPending: false }));
   }, []);
 
   const simulateCommand = useCallback((command: PendingGameCommand) => {
@@ -629,7 +698,7 @@ export function useGameClient() {
 
   const requestRematch = useCallback((want: boolean) => {
     if (IS_DEMO) {
-      setState((current) => ({ ...current, screen: 'game', game: { ...DEMO_GAME, serverTime: Date.now(), truceEndsAt: Date.now() + 20_000 } }));
+      setState((current) => ({ ...current, screen: 'game', game: { ...DEMO_GAME, serverTime: Date.now(), truceEndsAt: Date.now() + 30 * 60_000 } }));
       return;
     }
     socketRef.current?.emit('game:rematch', { want });
@@ -643,7 +712,8 @@ export function useGameClient() {
     eventLogRef.current = [];
     seqRef.current = 1;
     attemptedResumeRef.current = false;
-    setState((current) => ({ ...current, screen: 'menu', lobby: null, game: null, resumeSeconds: null }));
+    roomActionPendingRef.current = false;
+    setState((current) => ({ ...current, screen: 'menu', lobby: null, game: null, resumeSeconds: null, roomActionPending: false }));
   }, []);
 
   return {
@@ -652,6 +722,11 @@ export function useGameClient() {
     joinRoom,
     updateLobby,
     setReady,
+    startMatch,
+    kickPlayer,
+    transferOwner,
+    updateRoomSettings,
+    requestRoomList,
     leaveRoom,
     sendCommand,
     requestRematch,

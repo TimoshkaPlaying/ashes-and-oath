@@ -73,13 +73,13 @@ export default function App() {
   const { state } = client;
   let screen: React.ReactNode;
   if (state.screen === 'lobby' && state.lobby) {
-    screen = <LobbyScreen lobby={state.lobby} connection={state.connection} ping={state.ping} onUpdate={client.updateLobby} onReady={client.setReady} onLeave={client.leaveRoom} />;
+    screen = <LobbyScreen lobby={state.lobby} connection={state.connection} ping={state.ping} onUpdate={client.updateLobby} onReady={client.setReady} onStart={client.startMatch} onKick={client.kickPlayer} onTransferOwner={client.transferOwner} onRoomSettings={client.updateRoomSettings} onLeave={client.leaveRoom} />;
   } else if (state.screen === 'game' && state.game) {
     screen = <GameScreen game={state.game} connection={state.connection} ping={state.ping} settings={settings} onSettings={() => setSettingsOpen(true)} onReturnMenu={client.showMenu} onCommand={client.sendCommand} onToast={client.addToast} />;
   } else if (state.screen === 'results' && state.game) {
     screen = <ResultsScreen game={state.game} onRematch={() => client.requestRematch(true)} onMenu={client.showMenu} />;
   } else {
-    screen = <MenuScreen connection={state.connection} ping={state.ping} onCreate={client.createRoom} onJoin={client.joinRoom} onSettings={() => setSettingsOpen(true)} onHelp={() => setHelpOpen(true)} />;
+    screen = <MenuScreen connection={state.connection} ping={state.ping} rooms={state.publicRooms} roomActionPending={state.roomActionPending} onCreate={client.createRoom} onJoin={client.joinRoom} onRefreshRooms={client.requestRoomList} onSettings={() => setSettingsOpen(true)} onHelp={() => setHelpOpen(true)} />;
   }
 
   return (

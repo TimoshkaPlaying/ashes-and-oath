@@ -1,4 +1,4 @@
-import type { GameCommandResult, GameEvent, GameSnapshot, RoomError, RoomJoined } from "@ashes/shared";
+import type { GameCommandResult, GameEvent, GameSnapshot, LobbyState, RoomError, RoomJoined } from "@ashes/shared";
 import { io as createClient, type Socket as ClientSocket } from "socket.io-client";
 import { afterEach, describe, expect, it } from "vitest";
 import { createGameServer, type GameServer } from "../src/server.js";
@@ -59,7 +59,7 @@ describe("Socket.IO gateway", () => {
     const third = await connect();
 
     const createdPromise = once<RoomJoined>(first, "room:joined");
-    first.emit("room:create", { displayName: "Alice" });
+    first.emit("room:create", { displayName: "Alice", roomName: "Первая комната", visibility: "public", maxPlayers: 2 });
     const created = await createdPromise;
     const joinedPromise = once<RoomJoined>(second, "room:joined");
     second.emit("room:join", { code: created.code, displayName: "Boris" });
@@ -70,8 +70,11 @@ describe("Socket.IO gateway", () => {
     expect((await rejectedPromise).code).toBe("ROOM_FULL");
 
     first.emit("lobby:ready", { ready: true });
+    const readyPromise = onceWhere<LobbyState>(first, "lobby:state", (lobby) => lobby.canStart);
     const snapshotPromise = once<{ phase: string; opponent: unknown }>(first, "game:snapshot");
     second.emit("lobby:ready", { ready: true });
+    await readyPromise;
+    first.emit("lobby:start");
     const snapshot = await snapshotPromise;
     expect(snapshot.phase).toBe("truce");
     expect(snapshot.opponent).toBeNull();
@@ -91,14 +94,17 @@ describe("Socket.IO gateway", () => {
     const second = await connectSocket(port, sockets);
 
     const createdPromise = once<RoomJoined>(first, "room:joined");
-    first.emit("room:create", { displayName: "Alice" });
+    first.emit("room:create", { displayName: "Alice", roomName: "Вторая комната", visibility: "private", maxPlayers: 2 });
     const created = await createdPromise;
     const joinedPromise = once<RoomJoined>(second, "room:joined");
     second.emit("room:join", { code: created.code, displayName: "Boris" });
     const joined = await joinedPromise;
     first.emit("lobby:ready", { ready: true });
+    const readyPromise = onceWhere<LobbyState>(first, "lobby:state", (lobby) => lobby.canStart);
     const startedPromise = once<GameSnapshot>(first, "game:snapshot");
     second.emit("lobby:ready", { ready: true });
+    await readyPromise;
+    first.emit("lobby:start");
     await startedPromise;
 
     const disconnectedPromise = onceWhere<{ playerId: string; connected: boolean }>(
@@ -121,7 +127,7 @@ describe("Socket.IO gateway", () => {
 
     const duplicateErrorPromise = once<RoomError>(replacement, "room:error");
     replacement.emit("room:resume", { code: joined.code, reconnectToken: joined.reconnectToken });
-    expect((await duplicateErrorPromise).code).toBe("INVALID_REQUEST");
+    expect((await duplicateErrorPromise).code).toBe("ALREADY_IN_ROOM");
     expect(server.rooms.playerCount).toBe(2);
   });
 
@@ -133,14 +139,17 @@ describe("Socket.IO gateway", () => {
     const outsider = await connectSocket(port, sockets);
 
     const createdPromise = once<RoomJoined>(first, "room:joined");
-    first.emit("room:create", { displayName: "Alice" });
+    first.emit("room:create", { displayName: "Alice", roomName: "Третья комната", visibility: "public", maxPlayers: 2 });
     const created = await createdPromise;
     const joinedPromise = once<RoomJoined>(second, "room:joined");
     second.emit("room:join", { code: created.code, displayName: "Boris" });
     const joined = await joinedPromise;
     first.emit("lobby:ready", { ready: true });
+    const readyPromise = onceWhere<LobbyState>(first, "lobby:state", (lobby) => lobby.canStart);
     const startedPromise = once<GameSnapshot>(first, "game:snapshot");
     second.emit("lobby:ready", { ready: true });
+    await readyPromise;
+    first.emit("lobby:start");
     await startedPromise;
 
     const room = server.rooms.getRoom(created.code)!;
@@ -168,7 +177,7 @@ describe("Socket.IO gateway", () => {
 
     const duplicateErrorPromise = once<RoomError>(first, "room:error");
     first.emit("room:join", { code: created.code, displayName: "Alice again" });
-    expect((await duplicateErrorPromise).code).toBe("INVALID_REQUEST");
+    expect((await duplicateErrorPromise).code).toBe("ALREADY_IN_ROOM");
 
     const finishedSnapshotPromise = onceWhere<GameSnapshot>(
       second,
@@ -185,7 +194,7 @@ describe("Socket.IO gateway", () => {
     expect((await staleResumeErrorPromise).code).toBe("INVALID_RECONNECT_TOKEN");
 
     const newRoomPromise = once<RoomJoined>(first, "room:joined");
-    first.emit("room:create", { displayName: "Alice new" });
+    first.emit("room:create", { displayName: "Alice new", roomName: "Новая комната", visibility: "public", maxPlayers: 2 });
     expect((await newRoomPromise).code).not.toBe(created.code);
   });
 
@@ -196,14 +205,17 @@ describe("Socket.IO gateway", () => {
     const second = await connectSocket(port, sockets);
 
     const createdPromise = once<RoomJoined>(first, "room:joined");
-    first.emit("room:create", { displayName: "Alice" });
+    first.emit("room:create", { displayName: "Alice", roomName: "Четвёртая комната", visibility: "public", maxPlayers: 2 });
     const created = await createdPromise;
     const joinedPromise = once<RoomJoined>(second, "room:joined");
     second.emit("room:join", { code: created.code, displayName: "Boris" });
     const joined = await joinedPromise;
     first.emit("lobby:ready", { ready: true });
+    const readyPromise = onceWhere<LobbyState>(first, "lobby:state", (lobby) => lobby.canStart);
     const startedPromise = once<GameSnapshot>(first, "game:snapshot");
     second.emit("lobby:ready", { ready: true });
+    await readyPromise;
+    first.emit("lobby:start");
     await startedPromise;
 
     for (let seq = 1; seq <= 30; seq += 1) {
