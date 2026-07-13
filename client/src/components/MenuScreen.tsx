@@ -126,8 +126,9 @@ export function MenuScreen({ connection, ping, rooms, roomActionPending, onCreat
       <footer className="menu-status iron-panel">
         <ConnectionBadge connection={connection} ping={ping} />
         <i className="status-divider" />
-        <span><Globe2 size={14} /> v1.1.0</span>
+        <span><Globe2 size={14} /> v1.2.0</span>
       </footer>
     </main>
   );
 }
+
